@@ -1,0 +1,4 @@
+services:
+  busydiscord:
+    build: .
+    image: busydiscord:local

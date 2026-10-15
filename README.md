@@ -84,23 +84,43 @@ Connection diagnostics are available through `uv run python scripts/probe.py`.
 
 ## Docker
 
-Configure `.env` as described above. Compose mounts the local `.state` directory,
-so the saved Discord token is shared with local runs and survives container replacement.
+The default Compose configuration uses the published image from
+`ghcr.io/jag-k/busydiscord`. A source checkout and Python installation are not required.
+Download `compose.yaml` and `.env.example` into a deployment directory:
 
 ```sh
-docker compose build
+mkdir busydiscord && cd busydiscord
+curl -fsSLO https://raw.githubusercontent.com/jag-k/BusyDiscord/main/compose.yaml
+curl -fsSL https://raw.githubusercontent.com/jag-k/BusyDiscord/main/.env.example -o .env
+```
 
-# Skip this step if a Discord token has already been saved locally.
+Set `BUSYBAR_ADDR` and `BUSYBAR_TOKEN` in `.env`, then start the service:
+
+```sh
+docker compose pull
 docker compose run --rm busydiscord --login
-
 docker compose up -d
 docker compose logs -f
 ```
 
-Stop the service with `docker compose down`. Rebuild after updating the source:
+The login command prompts for the Discord token interactively. Compose stores it
+in `./.state`, preserving it across updates and container replacement. Skip login
+if this directory already contains a saved token. Run only one instance using it.
+
+Update to the latest published image:
 
 ```sh
-docker compose up -d --build --remove-orphans
+docker compose pull
+docker compose up -d --remove-orphans
+```
+
+To pin a release, add `BUSYDISCORD_VERSION=0.1.0` to `.env`. Stop the service with
+`docker compose down`; the state directory is retained.
+
+For development, build from a source checkout using the additional configuration:
+
+```sh
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
 ```
 
 For Docker Desktop, a Wi-Fi connection to BUSY Bar is recommended. Access to the

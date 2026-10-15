@@ -1,7 +1,6 @@
 services:
   busydiscord:
-    build: .
-    image: busydiscord:local
+    image: ghcr.io/jag-k/busydiscord:${BUSYDISCORD_VERSION:-latest}
     init: true
     restart: unless-stopped
     env_file: .env
