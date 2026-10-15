@@ -1,0 +1,16 @@
+services:
+  busydiscord:
+    build: .
+    image: busydiscord:local
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./.state:/app/.state
+    stop_signal: SIGINT
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

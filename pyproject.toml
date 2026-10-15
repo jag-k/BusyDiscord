@@ -1,0 +1,112 @@
+[project]
+name = "busydiscord"
+version = "0.1.0"
+description = "Display Discord voice status on BUSY Bar"
+readme = "README.md"
+authors = [
+  { name = "Jag_k", email = "me@jagk.dev" }
+]
+requires-python = ">=3.14"
+dependencies = [
+  "busylib>=2.6.0",
+  "discord-py-self>=2.1,<2.2",
+  "python-dotenv>=1.2,<2",
+]
+
+[project.scripts]
+busydiscord = "busydiscord:main"
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+  "pre-commit>=4.5.1",
+  "ruff>=0.15.4",
+  "ssort>=0.16.0",
+  "ty>=0.0.19",
+]
+
+# https://docs.astral.sh/ruff/
+[tool.ruff]
+line-length = 120
+extend-exclude = [".idea", ".vscode", ".fleet"]
+src = ["src"]
+target-version = "py314"
+
+# https://docs.astral.sh/ruff/settings/#lint
+[tool.ruff.lint]
+ignore = ["COM812"] # Ruff formatter owns trailing commas.
+select = [
+  'F',     # flake8
+  'I',     # isort
+  'UP',    # pyupgrade
+  'S',     # flake8-bandit
+  'ASYNC', # flake8-async
+  'B',     # flake8-bugbear
+  'COM',   # flake8-commas
+  'C4',    # flake8-comprehensions
+  'DTZ',   # flake8-datetimez
+  'LOG',   # flake8-logging
+  #'G',     # flake8-logging-format
+  'INP',  # flake8-no-pep420
+  'PIE',  # flake8-pie
+  'SIM',  # flake8-simplify
+  'TID',  # flake8-tidy-imports
+  'Q',    # flake8-quotes
+  'PTH',  # flake8-use-pathlib
+  'W',    # pycodestyle (warnings)
+  'E',    # pycodestyle (errors)
+  'N',    # pep8-naming
+  'PT',   # flake8-pytest-style
+  'PL',   # pylint
+  'FURB', # refurb
+  'RUF',  # ruff-specific rules
+  #'TRY',   # tryceratops
+]
+
+# https://docs.astral.sh/ruff/settings/#extend-per-file-ignores
+[tool.ruff.lint.extend-per-file-ignores]
+"tests/**" = ["S105", "S106", "PLR2004", "PT009", "PT027"]
+"scripts/**" = ["INP001"]
+'__init__.py' = [
+  'F401',   # {name} imported but unused; consider using importlib.util.find_spec to test for availability
+  'F403',   # from {name} import * used; unable to detect undefined names
+  'F405',   # {name} may be undefined, or defined from star imports
+  'TID252', # Relative imports from parent modules are banned
+  #'TRY002', # Create your own exception
+  #'TRY003', # Consider moving this statement to an else block
+]
+
+# https://docs.astral.sh/ruff/settings/#lintpylint
+[tool.ruff.lint.pylint]
+max-args = 12
+
+# https://docs.astral.sh/ruff/settings/#lintflake8-tidy-imports
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+# https://docs.astral.sh/ruff/settings/#lintpydocstyle
+[tool.ruff.lint.pydocstyle]
+convention = 'pep257'
+
+# https://docs.astral.sh/ruff/settings/#lintmccabe
+[tool.ruff.lint.mccabe]
+max-complexity = 6
+
+# https://docs.astral.sh/ruff/settings/#lintisort
+[tool.ruff.lint.isort]
+section-order = [
+  'future',
+  'standard-library',
+  'third-party',
+  'first-party',
+  'local-folder',
+]
+lines-after-imports = 2
+lines-between-types = 1
+
+
+[tool.ty.src]
+include = ["src"]

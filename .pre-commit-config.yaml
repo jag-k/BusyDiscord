@@ -1,0 +1,24 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ssort
+        name: Sort Python statements
+        entry: uv run --locked ssort
+        language: system
+        types: [python]
+      - id: ruff-check
+        name: Ruff lint
+        entry: uv run --locked ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: Ruff format
+        entry: uv run --locked ruff format
+        language: system
+        types: [python]
+      - id: ty
+        name: Check Python types
+        entry: uv run --locked ty check
+        language: system
+        pass_filenames: false
+        types: [python]

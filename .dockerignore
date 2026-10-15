@@ -1,0 +1,9 @@
+# Only application sources and dependency metadata enter the build context.
+**
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!src/**
+src/**/__pycache__/
+src/**/*.pyc

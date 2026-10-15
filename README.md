@@ -1,0 +1,172 @@
+# BusyDiscord
+
+Display Discord voice activity on [BUSY Bar](https://busy.app/): the current voice
+channel, observed call duration, and microphone and audio status.
+
+BusyDiscord connects through `discord.py-self`. It does not require a Discord
+client running on the same computer or a bot installed in each server.
+
+> **Discord account policy:** Automating user accounts violates
+> [Discord's rules](https://support.discord.com/hc/en-us/articles/115002192352-Automated-User-Accounts-Self-Bots)
+> and may result in account termination. BusyDiscord is an unofficial integration.
+
+## Features
+
+- Front display with the Discord logo, channel name, session timer, and mute/deafen indicators.
+- Rear display with detailed microphone and audio status.
+- Support for self mute, server mute, deafen, and Stage suppression.
+- Automatic reconnection and persistence of server-issued token replacements.
+- Screen cleanup when leaving voice or stopping the application.
+- Local execution and Docker Compose deployment.
+
+## Requirements
+
+- Python 3.14 or later and [uv](https://docs.astral.sh/uv/), or Docker with Compose.
+- A BUSY Bar reachable over USB or Wi-Fi.
+- A Discord user account token. Password and QR-code login are not currently supported.
+
+## Getting started
+
+Run these commands from the repository checkout:
+
+```sh
+uv sync --locked
+cp .env.example .env
+uv run busydiscord --login
+uv run busydiscord
+```
+
+The `--login` command prompts for a Discord token without displaying the input and
+stores it in `.state/discord-token.json`. Run it again to replace the saved token.
+
+Configure the BUSY Bar connection in `.env`:
+
+```dotenv
+BUSYBAR_ADDR=10.0.4.20
+BUSYBAR_TOKEN=
+```
+
+| Setting | Description |
+| --- | --- |
+| `BUSYBAR_ADDR` | Device IP address, `host:port`, or URL. Defaults to `10.0.4.20` for USB. |
+| `BUSYBAR_TOKEN` | HTTP API password configured in the device's web interface for Wi-Fi access. Not required over USB. |
+
+Use `--host` to override the configured address:
+
+```sh
+uv run busydiscord --host 192.168.0.140
+```
+
+Press Ctrl+C to stop. Run only one instance per state directory and device.
+
+## Usage
+
+```sh
+uv run busydiscord --help
+```
+
+| Option | Behavior |
+| --- | --- |
+| `--host HOST` | Override the BUSY Bar address; accepts an IP address, `host:port`, or URL. |
+| `--login` | Save or replace the Discord token using a hidden terminal prompt. |
+| `--demo` | Cycle through three sample display states without connecting to Discord. |
+| `--test` | Display one sample frame, release the screen, and exit without connecting to Discord. |
+| `--console-only` | Monitor Discord without drawing on BUSY Bar. |
+| `--seconds N` | Stop a monitoring session after the specified number of seconds. |
+
+For example, to monitor Discord for 30 seconds without a device:
+
+```sh
+uv run busydiscord --console-only --seconds 30
+```
+
+Connection diagnostics are available through `uv run python scripts/probe.py`.
+
+## Docker
+
+Configure `.env` as described above. Compose mounts the local `.state` directory,
+so the saved Discord token is shared with local runs and survives container replacement.
+
+```sh
+docker compose build
+
+# Skip this step if a Discord token has already been saved locally.
+docker compose run --rm busydiscord --login
+
+docker compose up -d
+docker compose logs -f
+```
+
+Stop the service with `docker compose down`. Rebuild after updating the source:
+
+```sh
+docker compose up -d --build --remove-orphans
+```
+
+For Docker Desktop, a Wi-Fi connection to BUSY Bar is recommended. Access to the
+USB address from the container depends on the host's routing configuration.
+
+## Behavior and limitations
+
+- **Session duration:** The timer measures time observed by BusyDiscord. If started
+  during an existing call, it begins at application startup. Moving between channels
+  preserves the timer; leaving voice or losing the connection resets it.
+- **Connection loss:** The display shows `WAITING` while Discord is unavailable.
+  Device connection failures are retried automatically. Higher-priority applications
+  retain control of the BUSY Bar display.
+- **Channel names:** Emoji are removed because they are not supported by the device fonts.
+- **Screen cleanup:** Display elements expire after 10 seconds without renewal.
+  Normal shutdown releases the application's screen immediately when the device is reachable.
+
+## Credentials and logging
+
+Discord credentials are stored in `.state`, independently of the BUSY Bar settings
+in `.env`. Server-issued Discord token replacements are saved automatically for
+subsequent runs. A revoked session or password change may require a new token.
+
+The token file is stored unencrypted and created with `0600` permissions on
+macOS and Linux. Both `.state` and `.env` are excluded from Git and the Docker
+build context. Do not share the state directory.
+
+JSON logs include the account's voice state and channel name/ID. Tokens and raw
+Gateway payloads are not logged; library debug logging is disabled.
+
+## Development
+
+Install the locked dependencies, then run the project checks:
+
+```sh
+uv sync --locked
+uv run ruff check .
+uv run ruff format --check .
+uv run ssort --check src scripts tests app.py
+uv run ty check
+uv run python -m unittest discover -s tests -v
+uv build --no-sources
+```
+
+EditorConfig and pre-commit configuration are included. GitHub Actions runs the
+checks and builds container images for amd64 and arm64. GHCR publication is
+configured for `main` and version tags matching `v*`.
+
+Display assets are generated from SVG sources with `sh scripts/render-icons.sh`,
+which requires `rsvg-convert`. Rendering dependencies are not needed at runtime:
+BUSY Bar draws the interface using native `text`, `image`, and `rectangle` elements.
+
+## busybar-apps compatibility
+
+The repository includes a thin `app.py` entry point alongside the Python package:
+
+```sh
+uv run python app.py --host 127.0.0.1:8080 --test
+```
+
+The `--host` and `--test` options follow the
+[busybar-apps contribution conventions](https://github.com/maxswinkels/busybar-apps/blob/main/CONTRIBUTING.md).
+The project is not yet packaged as a gallery submission. Before submitting it:
+
+- Include the package and assets in the app directory, with a manifest and `requirements.txt`.
+- Align `application_name` with the gallery slug (`busydiscord`; currently `BusyDiscord`).
+- Provide a 720×160 hardware or emulator preview and run the gallery checker.
+- Select a project license and explain the need for `discord.py-self` and
+  `python-dotenv`, which require individual review by the gallery maintainers.
