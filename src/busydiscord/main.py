@@ -22,6 +22,7 @@ class VoiceTracker:
         self.user_id = None
         self.state = None
         self.started = None
+        self.observed_started_at = None
         self.channels = {}
         self.voice_starts = {}
 
@@ -45,6 +46,7 @@ class VoiceTracker:
         if current["channel_id"]:
             if not self.state or not self.state.get("channel_id"):
                 self.started = now
+                self.observed_started_at = int(time.time())
         else:
             self.started = None
         self.state = current
@@ -116,6 +118,7 @@ class VoiceTracker:
             "channel_name": self.channels.get(self.state["channel_id"]),
             "observed_seconds": observed,
             "voice_start_time": voice_start,
+            "timer_started_at": voice_start or self.observed_started_at,
             "elapsed_seconds": elapsed,
             "timer_source": "discord" if voice_start else "observed",
         }
@@ -320,6 +323,7 @@ async def demo(bar, *, single_frame=False):
         "status": "in_voice",
         "channel_name": "Discord Test",
         "observed_seconds": 123,
+        "timer_started_at": int(time.time()) - 123,
         "self_mute": False,
         "self_deaf": False,
     }

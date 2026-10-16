@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import httpx2
 
@@ -9,15 +9,23 @@ from busylib import AsyncBusyBar
 from busylib.exceptions import BusyBarAPIError
 from busylib.types import DisplayElements
 
-from busydiscord.bar_display import APP_NAME, GLYPH_FILES, ICON_FILES, PRESENCE_ELEMENT_ID, BarDisplay, display_payload
+from busydiscord.bar_display import (
+    APP_NAME,
+    ELEMENT_TIMEOUT,
+    GLYPH_FILES,
+    ICON_FILES,
+    BarDisplay,
+    display_payload,
+)
 
 
 class DisplayTests(unittest.TestCase):
     def test_display_prefers_server_duration(self):
         payload = display_payload({"status": "in_voice", "observed_seconds": 5, "elapsed_seconds": 125})
         elements = {e["id"]: e for e in payload["elements"]}
-        self.assertEqual(elements["front-status"]["text"], "MIC 02:05")
-        self.assertEqual(elements["back-timer"]["text"], "02:05")
+        self.assertEqual(elements["front-elapsed"]["type"], "countdown")
+        self.assertEqual(elements["front-elapsed"]["direction"], "time_since")
+        self.assertEqual(elements["front-elapsed"]["timestamp"], elements["back-elapsed"]["timestamp"])
 
     def test_muting_and_deafening_control_front_and_back(self):
         for flags, expected in [
@@ -35,7 +43,27 @@ class DisplayTests(unittest.TestCase):
                 model = DisplayElements.model_validate(payload)
                 elements = {e.id: e for e in model.elements}
                 self.assertEqual(elements["front-channel"].text, "2")
-                self.assertEqual(elements["front-status"].text, expected + " 1:01:01")
+                self.assertEqual(elements["front-elapsed"].direction, "time_since")
+                expected_color = {"MIC": "#33FF66FF", "MUTE": "#FF3333FF", "DEAF": "#FFB000FF"}[expected]
+                self.assertEqual(elements["front-elapsed"].color, expected_color)
+                self.assertEqual(elements["back-elapsed"].color, "#FFFFFFFF")
+                self.assertEqual(elements["back-mic"].text, "MICROPHONE: " + ("ON" if expected == "MIC" else "OFF"))
+                self.assertEqual(elements["back-audio"].text, "AUDIO: " + ("OFF" if expected == "DEAF" else "ON"))
+                for flag, reason in [
+                    ("mute", "Server muted"),
+                    ("suppress", "Stage suppressed"),
+                    ("self_mute", "You muted"),
+                ]:
+                    if flags.get(flag):
+                        self.assertIn(reason, elements["back-mic-reason"].text)
+                for flag, reason in [("deaf", "Server deafened"), ("self_deaf", "You deafened")]:
+                    if flags.get(flag):
+                        self.assertIn(reason, elements["back-audio-reason"].text)
+                self.assertNotIn("front-microphone", elements)
+                self.assertNotIn("front-headphones", elements)
+                self.assertEqual(elements["front-clock"].stock_path, "shared/images/clock_5x5.image")
+                self.assertEqual(elements["front-clock"].x, 18)
+                self.assertEqual(elements["front-elapsed"].x, 24)
                 self.assertEqual(elements["front-logo"].type, "image")
                 self.assertEqual(elements["front-channel"].x, 18)
                 self.assertEqual(elements["front-channel"].width, 54)
@@ -49,7 +77,7 @@ class DisplayTests(unittest.TestCase):
                         elements["zz-status-glyph"].path, GLYPH_FILES["headphones" if expected == "DEAF" else "mic"]
                     )
                     self.assertEqual(elements["zzz-status-strike"].section, "hold")
-                self.assertTrue(all(e.timeout == 10 for e in model.elements))
+                self.assertTrue(all(e.timeout == ELEMENT_TIMEOUT for e in model.elements))
         self.assertIsNone(display_payload({"status": "outside_voice"}))
 
     def test_norm_mute_deafen_norm_has_independent_transitions(self):
@@ -105,76 +133,72 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         state = {"status": "in_voice", "observed_seconds": 5}
         await display.update({**state, "self_mute": True})
         await display.update(state)
-        bar.display_clear.assert_awaited_once_with(application_name=APP_NAME, element_ids=[PRESENCE_ELEMENT_ID])
+        bar.display_clear.assert_not_awaited()
         elements = {e["id"]: e for e in bar.display_draw.call_args.args[0]["elements"]}
         self.assertEqual(elements["zzz-status-strike"]["section"], "hide")
         self.assertEqual(elements["zz-status-glyph"]["section"], "hide_mic")
 
-    async def test_unchanged_status_is_refreshed_before_expiry(self):
+    async def test_native_counter_advances_without_any_device_requests(self):
         bar = AsyncMock()
         display = BarDisplay(bar)
-        state = {"status": "unknown"}
-        with patch("busydiscord.bar_display.time.monotonic", side_effect=[1, 1.5, 2]):
-            await display.update(state)
-            await display.update(state)
-            await display.update(state)
-        self.assertEqual(bar.display_draw.await_count, 2)
+        state = {"status": "in_voice", "timer_started_at": 1700000000, "elapsed_seconds": 1}
+        await display.update(state)
+        bar.reset_mock()
+        for elapsed in (2, 5, 30, 60, 3600):
+            await display.update({**state, "elapsed_seconds": elapsed, "observed_seconds": elapsed})
+        self.assertEqual(bar.mock_calls, [])
+        elements = {e["id"]: e for e in display.last_payload["elements"]}
+        for id in ("front-elapsed", "back-elapsed"):
+            self.assertEqual(elements[id]["timestamp"], "1700000000")
+            self.assertEqual(elements[id]["direction"], "time_since")
+            self.assertEqual(elements[id]["timeout"], 0)
 
 
-class ExitTests(unittest.IsolatedAsyncioTestCase):
-    async def test_exit_waits_ten_seconds_and_returns_with_latest_state(self):
+class StateChangeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dismissed_screen_returns_only_after_a_state_change(self):
         bar = AsyncMock()
-        display = BarDisplay(bar, report=lambda value: None)
-        state = {"status": "in_voice", "elapsed_seconds": 10}
-        with patch("busydiscord.bar_display.time.monotonic", return_value=1):
-            await display.update(state)
-        bar.display_clear.side_effect = BusyBarAPIError("Bad Request", status_code=400)
-        with patch("busydiscord.bar_display.time.monotonic", return_value=2):
-            await display.update({**state, "elapsed_seconds": 11})
-        bar.display_clear.assert_awaited_once_with(application_name=APP_NAME, element_ids=[PRESENCE_ELEMENT_ID])
-        self.assertEqual(display.resume_at, 12)
-        self.assertFalse(display.owns_screen)
-        bar.display_clear.side_effect = None
-        for now in (3, 7, 11.99):
-            with patch("busydiscord.bar_display.time.monotonic", return_value=now):
-                await display.update({**state, "elapsed_seconds": 20, "self_mute": True})
-        self.assertEqual(bar.display_draw.await_count, 1)
-        self.assertEqual(bar.display_clear.await_count, 1)
-        with patch("busydiscord.bar_display.time.monotonic", return_value=12):
-            await display.update({**state, "elapsed_seconds": 21, "self_deaf": True})
-        payload = bar.display_draw.call_args.args[0]
-        status = next(e for e in payload["elements"] if e["id"] == "front-status")
-        self.assertEqual(status["text"], "DEAF 00:21")
-        self.assertTrue(display.owns_screen)
+        display = BarDisplay(bar)
+        state = {"status": "in_voice", "timer_started_at": 1700000000}
+        await display.update(state)
+        # Simulate closing the screen independently, as the physical Back button does.
+        await bar.display_clear(application_name=APP_NAME)
+        bar.reset_mock()
+        for elapsed in (1, 10, 100):
+            await display.update({**state, "elapsed_seconds": elapsed})
+        self.assertEqual(bar.mock_calls, [])
+        await display.update({**state, "self_mute": True, "elapsed_seconds": 101})
+        bar.display_draw.assert_awaited_once()
+        self.assertEqual(display.last_payload["elements"][-1]["section"], "show")
 
-    async def test_leaving_voice_during_pause_does_not_restore_screen(self):
+    async def test_priority_rejection_is_not_retried_until_state_changes(self):
         bar = AsyncMock()
-        display = BarDisplay(bar, report=lambda value: None)
-        with patch("busydiscord.bar_display.time.monotonic", return_value=1):
-            await display.update({"status": "in_voice"})
-        bar.display_clear.side_effect = BusyBarAPIError("Bad Request", status_code=400)
-        with patch("busydiscord.bar_display.time.monotonic", return_value=2):
-            await display.update({"status": "in_voice", "self_mute": True})
-        with patch("busydiscord.bar_display.time.monotonic", return_value=20):
-            await display.update({"status": "outside_voice"})
-        self.assertEqual(bar.display_draw.await_count, 1)
-        await display.close()
-        self.assertEqual(bar.display_clear.await_count, 1)
-
-    async def test_network_error_is_not_treated_as_manual_exit(self):
-        display = BarDisplay(AsyncMock())
-        display.bar.display_clear.side_effect = BusyBarAPIError("Unauthorized", status_code=403)
+        display = BarDisplay(bar)
+        state = {"status": "in_voice", "timer_started_at": 1700000000}
+        bar.display_draw.side_effect = BusyBarAPIError("Low priority", status_code=409)
         with self.assertRaises(BusyBarAPIError):
-            await display.screen_still_open()
-        self.assertEqual(display.resume_at, 0)
+            await display.update(state)
+        for elapsed in (1, 10, 60):
+            await display.update({**state, "elapsed_seconds": elapsed})
+        self.assertEqual(bar.display_draw.await_count, 1)
+        with self.assertRaises(BusyBarAPIError):
+            await display.update({**state, "self_mute": True})
+        self.assertEqual(bar.display_draw.await_count, 2)
 
-    async def test_expired_lease_is_redrawn_without_manual_exit_delay(self):
+    async def test_stale_elements_after_dismissal_do_not_block_new_state(self):
         bar = AsyncMock()
         display = BarDisplay(bar)
-        with patch("busydiscord.bar_display.time.monotonic", return_value=1):
-            await display.update({"status": "in_voice"})
-        with patch("busydiscord.bar_display.time.monotonic", return_value=12):
-            await display.update({"status": "in_voice", "elapsed_seconds": 11})
+        state = {"status": "in_voice", "timer_started_at": 1700000000, "self_mute": True}
+        await display.update(state)
+        bar.display_clear.side_effect = BusyBarAPIError("Bad Request", status_code=400)
+        await display.update({"status": "unknown"})
         self.assertEqual(bar.display_draw.await_count, 2)
-        bar.display_clear.assert_not_awaited()
-        self.assertEqual(display.resume_at, 0)
+        self.assertEqual(display.last_state["status"], "unknown")
+
+    async def test_leave_voice_clears_once_without_background_requests(self):
+        bar = AsyncMock()
+        display = BarDisplay(bar)
+        await display.update({"status": "in_voice"})
+        await display.update({"status": "outside_voice"})
+        await display.update({"status": "outside_voice"})
+        await display.close()
+        bar.display_clear.assert_awaited_once_with(application_name=APP_NAME)

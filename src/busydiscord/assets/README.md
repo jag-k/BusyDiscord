@@ -35,3 +35,15 @@ The background scales with the glyph only on entry from and exit to normal; it d
 
 The strike draws and erases in the same direction: top-left to bottom-right.
 Erasing advances the line start toward the fixed bottom-right endpoint.
+
+`clock-5.svg`, `mic-on-5.svg`, and `headphones-on-5.svg` are retained 5x5
+pixel icon prototypes. The current lower row uses the device's built-in
+`shared/images/clock_5x5.image` and a native `time_since` counter instead.
+
+`back-microphone-{on,off}` and `back-headphones-{on,off}` are 13x13
+monochrome SVG/PNG variants for the detailed rear display. Off variants add
+a white strike with a black outline for contrast.
+
+Rear glyph PNGs are thresholded at 128 to binary RGB and alpha after SVG
+rasterization. This removes gray antialiased edges on the monochrome OLED;
+front assets retain their existing antialiasing.

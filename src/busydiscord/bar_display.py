@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 import time
 
@@ -10,7 +11,9 @@ from busylib.exceptions import BusyBarAPIError
 
 
 APP_NAME = "BusyDiscord"
-LEASE_SECONDS = 10
+DEFAULT_PRIORITY = 60
+MAX_PRIORITY = 100
+ELEMENT_TIMEOUT = 0
 LOGO_FILE = "discord.png"
 GLYPH_FILES = {
     section: f"status-glyph-{section}.anim"
@@ -26,11 +29,10 @@ GLYPH_FILES = {
     )
 }
 STRIKE_FILES = {section: f"status-strike-{section}.anim" for section in ("clear", "hold", "show", "hide")}
-ICON_FILES = (LOGO_FILE, *GLYPH_FILES.values(), *STRIKE_FILES.values())
+BACK_ICON_FILES = tuple(f"back-{icon}-{state}.png" for icon in ("microphone", "headphones") for state in ("on", "off"))
+ICON_FILES = (LOGO_FILE, *GLYPH_FILES.values(), *STRIKE_FILES.values(), *BACK_ICON_FILES)
 TEXT_LEFT = 18
 REFRESH_SECONDS = 1
-RETURN_DELAY_SECONDS = 10
-PRESENCE_ELEMENT_ID = "screen-presence"
 
 
 def channel_text(value):
@@ -39,25 +41,17 @@ def channel_text(value):
     return re.sub(r"\s+", " ", text).strip()[:120] or "Voice"
 
 
-def duration(seconds):
-    seconds = max(0, int(seconds))
-    hours, remainder = divmod(seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{hours}:{minutes:02}:{seconds:02}" if hours else f"{minutes:02}:{seconds:02}"
-
-
-def display_payload(state, previous=None):
+def display_payload(state, previous=None, *, priority=DEFAULT_PRIORITY):
     if state.get("status") == "outside_voice":
         return None
     active = state.get("status") == "in_voice"
     deaf = bool(state.get("self_deaf") or state.get("deaf"))
     muted = bool(state.get("self_mute") or state.get("mute") or deaf or state.get("suppress"))
-    label = "DEAF" if deaf else "MUTE" if muted else "MIC"
-    color = "#FFB000FF" if deaf else "#FF3333FF" if muted else "#33FF66FF"
-    if not active:
-        label, color = "WAITING", "#FFB000FF"
+    status_color = "#FFB000FF" if deaf else "#FF3333FF" if muted else "#33FF66FF"
     name = channel_text(state.get("channel_name") or "Voice") if active else "Discord"
-    timer = duration(state.get("elapsed_seconds", state.get("observed_seconds", 0)))
+    timestamp = state.get("timer_started_at") or state.get("voice_start_time")
+    if active and timestamp is None:
+        timestamp = int(time.time()) - int(state.get("elapsed_seconds", state.get("observed_seconds", 0)))
 
     def text(id, display, value, y, font="small", width=None, align="top_left", tint="#FFFFFFFF"):
         return {
@@ -74,8 +68,102 @@ def display_payload(state, previous=None):
             "scroll_rate": 800,
             "scroll_start_delay": 800,
             "scroll_repeat_delay": 1500,
-            "timeout": LEASE_SECONDS,
+            "timeout": ELEMENT_TIMEOUT,
         }
+
+    def counter(id, display, x, y):
+        return {
+            "id": id,
+            "type": "countdown",
+            "display": display,
+            "timestamp": str(int(timestamp)),
+            "direction": "time_since",
+            "show_hours": "when_non_zero",
+            "color": status_color if display == "front" else "#FFFFFFFF",
+            "x": x,
+            "y": y,
+            "align": "top_left",
+            "timeout": ELEMENT_TIMEOUT,
+        }
+
+    status_elements = []
+    timer_element = text("front-status", "front", "WAITING", 8, "tiny", tint="#FFB000FF")
+    back_timer = text("back-timer", "back", "WAITING", 30, "extra_large")
+    if active:
+        # Separate IDs avoid changing an existing text element's type on firmware.
+        timer_element = counter("front-elapsed", "front", 24, 8)
+        back_timer = counter("back-elapsed", "back", 12, 29)
+        status_elements.append(
+            {
+                "id": "front-clock",
+                "type": "image",
+                "display": "front",
+                "stock_path": "shared/images/clock_5x5.image",
+                "x": TEXT_LEFT,
+                "y": 10,
+                "align": "top_left",
+                "timeout": ELEMENT_TIMEOUT,
+            }
+        )
+
+    back_details = []
+    if active:
+        mic_reasons = [
+            reason
+            for flag, reason in [
+                (state.get("self_mute"), "You muted"),
+                (state.get("mute"), "Server muted"),
+                (state.get("suppress"), "Stage suppressed"),
+                (deaf, "Audio disabled"),
+            ]
+            if flag
+        ]
+        audio_reasons = [
+            reason
+            for flag, reason in [
+                (state.get("self_deaf"), "You deafened"),
+                (state.get("deaf"), "Server deafened"),
+            ]
+            if flag
+        ]
+        for id, icon, off, title, detail, y in [
+            ("back-mic", "microphone", muted, "MICROPHONE", "; ".join(mic_reasons) or "Ready to speak", 41),
+            ("back-audio", "headphones", deaf, "AUDIO", "; ".join(audio_reasons) or "Listening", 59),
+        ]:
+            back_details.append(
+                {
+                    "id": id + "-icon",
+                    "type": "image",
+                    "display": "back",
+                    "path": f"back-{icon}-{'off' if off else 'on'}.png",
+                    "x": 2,
+                    "y": y + 1,
+                    "align": "top_left",
+                    "timeout": ELEMENT_TIMEOUT,
+                }
+            )
+            heading = text(id, "back", f"{title}: {'OFF' if off else 'ON'}", y, width=139)
+            heading["x"] = 19
+            explanation = text(id + "-reason", "back", detail, y + 9, "tiny", width=139)
+            explanation["x"] = 19
+            back_details.extend((heading, explanation))
+        back_details.append(
+            {
+                "id": "back-clock",
+                "type": "image",
+                "display": "back",
+                "stock_path": "shared/images/clock_5x5.image",
+                "x": 2,
+                "y": 31,
+                "align": "top_left",
+                "timeout": ELEMENT_TIMEOUT,
+            }
+        )
+    else:
+        back_details = [
+            text("back-mic", "back", "Status unavailable", 56),
+            text("back-audio", "back", "Connecting to Discord", 68),
+        ]
 
     overlay_elements = []
     old_active = previous is not None and previous.get("status") == "in_voice"
@@ -107,7 +195,7 @@ def display_payload(state, previous=None):
                 "x": 7,
                 "y": 7,
                 "align": "top_left",
-                "timeout": LEASE_SECONDS,
+                "timeout": ELEMENT_TIMEOUT,
             }
 
         overlay_elements = [
@@ -117,21 +205,8 @@ def display_payload(state, previous=None):
 
     return {
         "application_name": APP_NAME,
-        "priority": 50,
+        "priority": priority,
         "elements": [
-            {
-                "id": PRESENCE_ELEMENT_ID,
-                "type": "rectangle",
-                "display": "front",
-                "x": 0,
-                "y": 0,
-                "width": 1,
-                "height": 1,
-                "fill": "solid",
-                "fill_colors": ["#00000000"],
-                "border_width": 0,
-                "timeout": LEASE_SECONDS,
-            },
             {
                 "id": "0-logo-background",
                 "type": "rectangle",
@@ -144,7 +219,7 @@ def display_payload(state, previous=None):
                 "fill": "solid",
                 "fill_colors": ["#5865F2FF"],
                 "border_width": 0,
-                "timeout": LEASE_SECONDS,
+                "timeout": ELEMENT_TIMEOUT,
             },
             {
                 "id": "front-logo",
@@ -154,15 +229,15 @@ def display_payload(state, previous=None):
                 "x": 2,
                 "y": 3,
                 "align": "top_left",
-                "timeout": LEASE_SECONDS,
+                "timeout": ELEMENT_TIMEOUT,
             },
             text("front-channel", "front", name, 0, "small"),
-            text("front-status", "front", f"{label} {timer}" if active else label, 8, "tiny", tint=color),
+            timer_element,
+            *status_elements,
             text("back-title", "back", "DISCORD VOICE", 0),
-            text("back-channel", "back", name, 14, "normal"),
-            text("back-timer", "back", timer if active else "WAITING", 30, "extra_large"),
-            text("back-mic", "back", f"MIC: {'OFF' if muted else 'ON'}" if active else "Status unavailable", 56),
-            text("back-audio", "back", f"AUDIO: {'OFF' if deaf else 'ON'}" if active else "Connecting to Discord", 68),
+            text("back-channel", "back", name, 12, "normal"),
+            back_timer,
+            *back_details,
             *overlay_elements,
         ],
     }
@@ -170,48 +245,43 @@ def display_payload(state, previous=None):
 
 class BarDisplay:
     def __init__(self, bar, report=print):
+        self.priority = int(os.environ.get("BUSYBAR_PRIORITY") or DEFAULT_PRIORITY)
+        if not 1 <= self.priority <= MAX_PRIORITY:
+            raise ValueError("BUSYBAR_PRIORITY must be an integer from 1 to 100")
         self.bar = bar
         self.report = report
         self.last_payload = None
         self.last_state = None
-        self.last_sent = 0
+        self.observed_state = None
         self.owns_screen = False
         self.ready = False
         self.unavailable = False
-        self.resume_at = 0
-
-    async def screen_still_open(self):
-        # There is no HTTP exit event. A scoped DELETE checks a transparent marker
-        # without opening the canvas. The next draw restores it. Firmware 27.5
-        # returns a generic 400 if the canvas/marker is gone or another app owns it.
-        try:
-            await self.bar.display_clear(application_name=APP_NAME, element_ids=[PRESENCE_ELEMENT_ID])
-        except BusyBarAPIError as exc:
-            if exc.status_code == HTTPStatus.BAD_REQUEST:
-                return False
-            raise
-        return True
 
     async def update(self, state):
-        payload = display_payload(state, self.last_state if self.owns_screen else None)
-        if payload is None and not self.owns_screen:
+        state = dict(state)
+        if state.get("status") == "in_voice" and not state.get("timer_started_at"):
+            previous = self.observed_state or {}
+            state["timer_started_at"] = (
+                state.get("voice_start_time")
+                or (previous.get("timer_started_at") if previous.get("status") == "in_voice" else None)
+                or int(time.time()) - int(state.get("elapsed_seconds", state.get("observed_seconds", 0)))
+            )
+        # Only semantic changes cause HTTP requests. The native counter advances locally.
+        visible = {key: value for key, value in state.items() if key not in ("observed_seconds", "elapsed_seconds")}
+        previous = {
+            key: value
+            for key, value in (self.observed_state or {}).items()
+            if key not in ("observed_seconds", "elapsed_seconds")
+        }
+        if visible == previous:
             return
-        now = time.monotonic()
-        if now < self.resume_at:
+        # Remember even failed attempts: a dismissed/blocked screen stays dismissed
+        # until the next state change, without background redraw or retry traffic.
+        self.observed_state = state
+        if state.get("status") == "outside_voice" and not self.owns_screen:
+            self.last_state = state
             return
-        if payload == self.last_payload and now - self.last_sent < REFRESH_SECONDS:
-            return
-        if (
-            payload is not None
-            and self.owns_screen
-            and now - self.last_sent < LEASE_SECONDS
-            and not await self.screen_still_open()
-        ):
-            self.owns_screen = False
-            self.last_payload = None
-            self.resume_at = now + RETURN_DELAY_SECONDS
-            self.report({"busybar": "screen_released", "return_in_seconds": RETURN_DELAY_SECONDS})
-            return
+        payload = display_payload(state, self.last_state if self.owns_screen else None, priority=self.priority)
         if not self.ready:
             await self.bar.version()
             for filename in ICON_FILES:
@@ -230,12 +300,16 @@ class BarDisplay:
                 current_ids = {element["id"] for element in payload["elements"]}
                 removed_ids = previous_ids - current_ids
                 if removed_ids:
-                    await self.bar.display_clear(application_name=APP_NAME, element_ids=sorted(removed_ids))
+                    try:
+                        await self.bar.display_clear(application_name=APP_NAME, element_ids=sorted(removed_ids))
+                    except BusyBarAPIError as exc:
+                        if exc.status_code != HTTPStatus.BAD_REQUEST:
+                            raise
+                        # Manual dismissal already removed these elements.
             await self.bar.display_draw(payload)
             self.owns_screen = True
         self.last_payload = payload
         self.last_state = dict(state)
-        self.last_sent = now
         if self.unavailable:
             self.report({"busybar": "reconnected"})
         self.unavailable = False
@@ -267,8 +341,7 @@ class BarDisplay:
             try:
                 await self.bar.display_clear(application_name=APP_NAME)
             except Exception:
-                # The lease also expires if a disconnected device cannot be cleared.
-                self.report({"busybar": "clear_failed", "expires_in_seconds": LEASE_SECONDS})
+                self.report({"busybar": "clear_failed"})
 
 
 def make_bar(addr, token):

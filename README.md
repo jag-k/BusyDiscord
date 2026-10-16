@@ -12,9 +12,10 @@ client running on the same computer or a bot installed in each server.
 
 ## Features
 
-- Front display with the Discord logo, channel name, session timer, and mute/deafen indicators.
+- Front display with the Discord logo, channel name, and clock/session timer on the left.
+- Native BUSY Bar elapsed-time counters and a built-in clock icon.
 - Independent animated microphone/headphone glyphs and mute strike on the front display.
-- Rear display with detailed microphone and audio status.
+- Rear display with 13×13 microphone/headphone icons and explanations for self/server mute, deafen, and Stage suppression.
 - Support for self mute, server mute, deafen, and Stage suppression.
 - Automatic reconnection and persistence of server-issued token replacements.
 - Screen cleanup when leaving voice or stopping the application.
@@ -45,12 +46,14 @@ Configure the BUSY Bar connection in `.env`:
 ```dotenv
 BUSYBAR_ADDR=10.0.4.20
 BUSYBAR_TOKEN=
+BUSYBAR_PRIORITY=60
 ```
 
 | Setting | Description |
 | --- | --- |
 | `BUSYBAR_ADDR` | Device IP address, `host:port`, or URL. Defaults to `10.0.4.20` for USB. |
 | `BUSYBAR_TOKEN` | HTTP API password configured in the device's web interface for Wi-Fi access. Not required over USB. |
+| `BUSYBAR_PRIORITY` | Display priority from 1 to 100. Defaults to 60; higher values can override lower-priority screens. |
 
 Use `--host` to override the configured address:
 
@@ -137,16 +140,17 @@ USB address from the container depends on the host's routing configuration.
   Logs identify the source as `timer_source: discord` or `observed`; `elapsed_seconds`
   is the displayed duration and `observed_seconds` remains the local observation time.
 - **Connection loss:** The display shows `WAITING` while Discord is unavailable.
-  Device connection failures are retried automatically. Higher-priority applications
+  A failed update is retried on the next state change. Higher-priority applications
   retain control of the BUSY Bar display.
 - **Channel names:** Emoji are removed because they are not supported by the device fonts.
-- **Manual dismissal:** The display refreshes once per second. When its elements
-  are removed by exiting the screen or another app taking over, BusyDiscord detects
-  the loss using a transparent presence element and waits 10 seconds before drawing
-  again. Discord monitoring continues during this pause, and the next frame uses
-  the latest state. The API does not distinguish manual dismissal from takeover.
-- **Screen cleanup:** Display elements expire after 10 seconds without renewal.
-  Normal shutdown releases the application's screen immediately when the device is reachable.
+- **Native timer:** Both displays use `countdown` with `direction: time_since`.
+  BUSY Bar updates the seconds itself from `timer_started_at`; the service sends
+  display changes only when voice/channel/mute/deafen state or the session start changes.
+- **Manual dismissal:** Closing the display leaves it closed until the next state
+  change. There are no screen probes, keepalives, or automatic revival attempts.
+- **Screen cleanup:** Elements have no expiry. Normal shutdown or leaving voice
+  clears the application's screen; a forced process kill may leave the last screen visible.
+
 
 ## Credentials and logging
 
