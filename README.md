@@ -1,7 +1,7 @@
 # BusyDiscord
 
 Display Discord voice activity on [BUSY Bar](https://busy.app/): the current voice
-channel, observed call duration, and microphone and audio status.
+channel, voice session duration, and microphone and audio status.
 
 BusyDiscord connects through `discord.py-self`. It does not require a Discord
 client running on the same computer or a bot installed in each server.
@@ -13,6 +13,7 @@ client running on the same computer or a bot installed in each server.
 ## Features
 
 - Front display with the Discord logo, channel name, session timer, and mute/deafen indicators.
+- Independent animated microphone/headphone glyphs and mute strike on the front display.
 - Rear display with detailed microphone and audio status.
 - Support for self mute, server mute, deafen, and Stage suppression.
 - Automatic reconnection and persistence of server-issued token replacements.
@@ -128,13 +129,22 @@ USB address from the container depends on the host's routing configuration.
 
 ## Behavior and limitations
 
-- **Session duration:** The timer measures time observed by BusyDiscord. If started
-  during an existing call, it begins at application startup. Moving between channels
-  preserves the timer; leaving voice or losing the connection resets it.
+- **Session duration:** Uses Discord's `voice_start_time` for the active guild voice
+  channel, including when BusyDiscord starts during an existing session. This is
+  the channel's session start, which may precede your own arrival. Moving channels
+  selects the destination channel's timer. If Discord does not provide a start
+  time (including private calls), the timer falls back to locally observed time.
+  Logs identify the source as `timer_source: discord` or `observed`; `elapsed_seconds`
+  is the displayed duration and `observed_seconds` remains the local observation time.
 - **Connection loss:** The display shows `WAITING` while Discord is unavailable.
   Device connection failures are retried automatically. Higher-priority applications
   retain control of the BUSY Bar display.
 - **Channel names:** Emoji are removed because they are not supported by the device fonts.
+- **Manual dismissal:** The display refreshes once per second. When its elements
+  are removed by exiting the screen or another app taking over, BusyDiscord detects
+  the loss using a transparent presence element and waits 10 seconds before drawing
+  again. Discord monitoring continues during this pause, and the next frame uses
+  the latest state. The API does not distinguish manual dismissal from takeover.
 - **Screen cleanup:** Display elements expire after 10 seconds without renewal.
   Normal shutdown releases the application's screen immediately when the device is reachable.
 
@@ -170,8 +180,8 @@ checks and builds container images for amd64 and arm64. GHCR publication is
 configured for `main` and version tags matching `v*`.
 
 Display assets are generated from SVG sources with `sh scripts/render-icons.sh`,
-which requires `rsvg-convert`. Rendering dependencies are not needed at runtime:
-BUSY Bar draws the interface using native `text`, `image`, and `rectangle` elements.
+which requires `rsvg-convert` and `ffmpeg`. Rendering dependencies are not needed at runtime:
+BUSY Bar draws the interface using native `text`, `image`, `animation`, and `rectangle` elements.
 
 ## busybar-apps compatibility
 

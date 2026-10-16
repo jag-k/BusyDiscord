@@ -1,11 +1,12 @@
 import asyncio
+import json
 import os
 import tempfile
 import unittest
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from busydiscord.main import VoiceClient, VoiceTracker, observe, prepare_token
 from busydiscord.token_store import TokenStore
@@ -71,6 +72,40 @@ class VoiceTrackerTests(unittest.TestCase):
         self.assertEqual(snapshot["guild_id"], "guild")
         self.assertTrue(snapshot["self_mute"])
 
+    def test_server_timer_restores_existing_session_and_tracks_channel_moves(self):
+        self.tracker.update(self.state(), 10)
+        self.tracker.update_channel_info(
+            "CHANNEL_INFO",
+            {
+                "guild_id": "guild",
+                "channels": [
+                    {"id": "voice", "voice_start_time": 1000},
+                    {"id": "next", "voice_start_time": 1100},
+                ],
+            },
+        )
+        state = self.tracker.snapshot(15, wall_now=1200)
+        self.assertEqual(state["elapsed_seconds"], 200)
+        self.assertEqual(state["observed_seconds"], 5)
+        self.assertEqual(state["timer_source"], "discord")
+        self.tracker.update(self.state(channel_id="next", self_mute=True), 20)
+        self.assertEqual(self.tracker.snapshot(25, wall_now=1205)["elapsed_seconds"], 105)
+        self.tracker.update(self.state(channel_id=None), 30)
+        self.assertEqual(self.tracker.snapshot(35)["status"], "outside_voice")
+
+    def test_server_timer_updates_null_and_missing_fields(self):
+        self.tracker.update(self.state(), 10)
+        data = {"guild_id": "guild", "id": "voice", "voice_start_time": 1000}
+        self.tracker.update_channel_info("VOICE_CHANNEL_START_TIME_UPDATE", data)
+        self.tracker.update_channel_info("CHANNEL_INFO", {"guild_id": "guild", "channels": [{"id": "voice"}]})
+        self.assertEqual(self.tracker.snapshot(15, wall_now=1200)["elapsed_seconds"], 200)
+        self.tracker.update_channel_info("VOICE_CHANNEL_START_TIME_UPDATE", {**data, "voice_start_time": 1300})
+        self.assertEqual(self.tracker.snapshot(15, wall_now=1200)["elapsed_seconds"], 0)
+        self.tracker.update_channel_info("VOICE_CHANNEL_START_TIME_UPDATE", {**data, "voice_start_time": None})
+        state = self.tracker.snapshot(15, wall_now=1200)
+        self.assertEqual(state["elapsed_seconds"], 5)
+        self.assertEqual(state["timer_source"], "observed")
+
 
 class LibraryClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_bounded_run_closes_client_and_keeps_rotated_token(self):
@@ -111,6 +146,41 @@ class LibraryClientTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(output.call_args.args[0]["channel_name"], "General")
                     await client.on_disconnect()
                     self.assertEqual(client.tracker.snapshot(1)["status"], "unknown")
+
+    async def test_gateway_timer_request_response_and_reconnect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            async with VoiceClient(TokenStore(Path(directory) / "token.json")) as client:
+                client.tracker.user_id = "me"
+                client.tracker.update({"user_id": "me", "guild_id": "guild", "channel_id": "voice"}, 10)
+                client.ws = SimpleNamespace(send_as_json=AsyncMock())
+                await client.request_voice_start()
+                await client.request_voice_start()
+                client.ws.send_as_json.assert_awaited_once_with(
+                    {
+                        "op": 43,
+                        "d": {"guild_id": "guild", "fields": ["voice_start_time"]},
+                    }
+                )
+                with patch("busydiscord.main.output") as output:
+                    await client.on_socket_raw_receive(
+                        json.dumps(
+                            {
+                                "t": "CHANNEL_INFO",
+                                "d": {
+                                    "guild_id": "guild",
+                                    "channels": [{"id": "voice", "voice_start_time": 1000}],
+                                },
+                            }
+                        )
+                    )
+                    self.assertEqual(output.call_args.args[0]["timer_source"], "discord")
+                    output.reset_mock()
+                    await client.on_socket_raw_receive('{"t":"READY","d":{"auth_token":"private"}}')
+                    output.assert_not_called()
+                    await client.on_disconnect()
+                self.assertFalse(client.tracker.voice_starts)
+                self.assertIsNone(client.requested_voice_channel)
+                client.ws = None
 
     async def test_library_rotation_is_saved_and_not_logged(self):
         with tempfile.TemporaryDirectory() as directory:

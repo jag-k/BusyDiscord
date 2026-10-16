@@ -23,6 +23,7 @@ class VoiceTracker:
         self.state = None
         self.started = None
         self.channels = {}
+        self.voice_starts = {}
 
     def update(self, state, now):
         if not self.user_id or state.get("user_id") != self.user_id:
@@ -49,6 +50,29 @@ class VoiceTracker:
         self.state = current
         return True
 
+    def update_channel_info(self, event, data):
+        if event == "CHANNEL_INFO":
+            channels = data.get("channels", [])
+        elif event == "VOICE_CHANNEL_START_TIME_UPDATE":
+            channels = [data]
+        else:
+            return False
+        changed = False
+        for channel in channels:
+            if "voice_start_time" not in channel:
+                continue
+            key = (str(data.get("guild_id")), str(channel["id"]))
+            value = channel["voice_start_time"]
+            if value is None:
+                self.voice_starts.pop(key, None)
+            elif type(value) is int and value > 0:
+                self.voice_starts[key] = value
+            else:
+                continue
+            if self.state and key == (self.state.get("guild_id"), self.state.get("channel_id")):
+                changed = True
+        return changed
+
     def dispatch(self, event, data, now):
         changed = False
         if event == "READY":
@@ -56,6 +80,7 @@ class VoiceTracker:
             self.state = None
             self.started = None
             self.channels.clear()
+            self.voice_starts.clear()
         if event == "VOICE_STATE_UPDATE":
             return self.update(data, now)
         if event in ("READY", "GUILD_CREATE", "CALL_CREATE", "CALL_UPDATE"):
@@ -75,16 +100,24 @@ class VoiceTracker:
             self.channels[data["id"]] = data["name"]
         return changed
 
-    def snapshot(self, now):
+    def snapshot(self, now, wall_now=None):
         if self.state is None:
             return {"status": "unknown", "reason": "waiting_for_own_voice_state"}
         if not self.state["channel_id"]:
             return {"status": "outside_voice"}
+        observed = max(0, int(now - self.started))
+        voice_start = self.voice_starts.get((self.state.get("guild_id"), self.state["channel_id"]))
+        elapsed = (
+            max(0, int((time.time() if wall_now is None else wall_now) - voice_start)) if voice_start else observed
+        )
         return {
             "status": "in_voice",
             **self.state,
             "channel_name": self.channels.get(self.state["channel_id"]),
-            "observed_seconds": int(now - self.started),
+            "observed_seconds": observed,
+            "voice_start_time": voice_start,
+            "elapsed_seconds": elapsed,
+            "timer_source": "discord" if voice_start else "observed",
         }
 
 
@@ -100,12 +133,14 @@ class VoiceClient(discord.Client):
             chunk_guilds_at_startup=False,
             guild_subscriptions=False,
             sync_presence=False,
+            enable_debug_events=True,
         )
         self.store = store
         self.tracker = VoiceTracker()
         self.authenticated = False
         self.connected = False
         self.failed = False
+        self.requested_voice_channel = None
 
     def save_token(self):
         # discord.py-self 2.1 updates HTTPClient.token on READY.auth_token.
@@ -116,6 +151,32 @@ class VoiceClient(discord.Client):
 
     async def on_connect(self):
         self.save_token()
+
+    async def request_voice_start(self):
+        state = self.tracker.state or {}
+        guild_id = state.get("guild_id")
+        channel_id = state.get("channel_id")
+        if not channel_id or not guild_id:
+            self.requested_voice_channel = None
+            return
+        key = (guild_id, channel_id)
+        if key == self.requested_voice_channel or not self.ws:
+            return
+        try:
+            await self.ws.send_as_json({"op": 43, "d": {"guild_id": guild_id, "fields": ["voice_start_time"]}})
+        except Exception as exc:
+            output({"voice_timer": "request_failed", "error_type": type(exc).__name__})
+        else:
+            self.requested_voice_channel = key
+
+    async def on_socket_raw_receive(self, message):
+        # discord.py-self 2.1 does not parse these events. Never log raw frames.
+        payload = json.loads(message)
+        event = payload.get("t")
+        if event in ("CHANNEL_INFO", "VOICE_CHANNEL_START_TIME_UPDATE") and self.tracker.update_channel_info(
+            event, payload["d"]
+        ):
+            output(self.tracker.snapshot(time.monotonic()))
 
     def record_voice(self, user, state, previous=None):
         if not self.user or not user or user.id != self.user.id:
@@ -156,18 +217,22 @@ class VoiceClient(discord.Client):
         self.authenticated = self.connected = True
         self.save_token()
         self.seed_voice()
+        await self.request_voice_start()
         output({"connection": "authenticated", "library": "discord.py-self"})
         output(self.tracker.snapshot(time.monotonic()))
 
     async def on_resumed(self):
         self.connected = True
         self.seed_voice()
+        await self.request_voice_start()
         output({"connection": "resumed"})
 
     async def on_disconnect(self):
         self.connected = False
         self.tracker.state = None
         self.tracker.started = None
+        self.tracker.voice_starts.clear()
+        self.requested_voice_channel = None
         output({"connection": "disconnected", "voice_status": "unknown"})
 
     async def on_voice_state_update(self, user, before, after):
@@ -175,6 +240,7 @@ class VoiceClient(discord.Client):
         if self.user:
             self.tracker.user_id = str(self.user.id)
         self.record_voice(user, after, before)
+        await self.request_voice_start()
 
     async def on_error(self, event, *args, **kwargs):
         # The default handler prints a traceback, potentially including private data.
