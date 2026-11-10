@@ -22,3 +22,9 @@ repos:
         language: system
         pass_filenames: false
         types: [python]
+      - id: unit-tests
+        name: Run unit tests
+        entry: uv run --locked python -m unittest discover -s tests -q
+        language: system
+        pass_filenames: false
+        files: '(\.py$|\.anim$|^pyproject\.toml$|^uv\.lock$)'

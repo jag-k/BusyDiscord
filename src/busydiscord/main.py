@@ -14,114 +14,11 @@ import discord
 from dotenv import dotenv_values, load_dotenv, unset_key
 
 from .bar_display import BarDisplay, make_bar
+from .bot_source import BotSource
+from .rpc_source import RpcSource
+from .sources import SourceError, observe_source
 from .token_store import TokenStore
-
-
-class VoiceTracker:
-    def __init__(self):
-        self.user_id = None
-        self.state = None
-        self.started = None
-        self.observed_started_at = None
-        self.channels = {}
-        self.voice_starts = {}
-
-    def update(self, state, now):
-        if not self.user_id or state.get("user_id") != self.user_id:
-            return False
-        current = {
-            key: state.get(key)
-            for key in ("channel_id", "guild_id", "self_mute", "self_deaf", "mute", "deaf", "suppress")
-        }
-        # Do not treat an unrelated/stale guild leave as leaving the active call.
-        if (
-            self.state
-            and self.state.get("channel_id")
-            and not current["channel_id"]
-            and current["guild_id"] != self.state.get("guild_id")
-        ):
-            return False
-        if current == self.state:
-            return False
-        if current["channel_id"]:
-            if not self.state or not self.state.get("channel_id"):
-                self.started = now
-                self.observed_started_at = int(time.time())
-        else:
-            self.started = None
-        self.state = current
-        return True
-
-    def update_channel_info(self, event, data):
-        if event == "CHANNEL_INFO":
-            channels = data.get("channels", [])
-        elif event == "VOICE_CHANNEL_START_TIME_UPDATE":
-            channels = [data]
-        else:
-            return False
-        changed = False
-        for channel in channels:
-            if "voice_start_time" not in channel:
-                continue
-            key = (str(data.get("guild_id")), str(channel["id"]))
-            value = channel["voice_start_time"]
-            if value is None:
-                self.voice_starts.pop(key, None)
-            elif type(value) is int and value > 0:
-                self.voice_starts[key] = value
-            else:
-                continue
-            if self.state and key == (self.state.get("guild_id"), self.state.get("channel_id")):
-                changed = True
-        return changed
-
-    def dispatch(self, event, data, now):
-        changed = False
-        if event == "READY":
-            self.user_id = data["user"]["id"]
-            self.state = None
-            self.started = None
-            self.channels.clear()
-            self.voice_starts.clear()
-        if event == "VOICE_STATE_UPDATE":
-            return self.update(data, now)
-        if event in ("READY", "GUILD_CREATE", "CALL_CREATE", "CALL_UPDATE"):
-            containers = [data]
-            if event == "READY":
-                containers += data.get("guilds", []) + data.get("calls", [])
-            for container in containers:
-                for channel in container.get("channels", []) + container.get("private_channels", []):
-                    if channel.get("name"):
-                        self.channels[channel["id"]] = channel["name"]
-                for voice_state in container.get("voice_states", []):
-                    state = dict(voice_state)
-                    if event == "GUILD_CREATE" or (event == "READY" and container in data.get("guilds", [])):
-                        state.setdefault("guild_id", container.get("id"))
-                    changed |= self.update(state, now)
-        if event in ("CHANNEL_CREATE", "CHANNEL_UPDATE") and data.get("name"):
-            self.channels[data["id"]] = data["name"]
-        return changed
-
-    def snapshot(self, now, wall_now=None):
-        if self.state is None:
-            return {"status": "unknown", "reason": "waiting_for_own_voice_state"}
-        if not self.state["channel_id"]:
-            return {"status": "outside_voice"}
-        observed = max(0, int(now - self.started))
-        voice_start = self.voice_starts.get((self.state.get("guild_id"), self.state["channel_id"]))
-        elapsed = (
-            max(0, int((time.time() if wall_now is None else wall_now) - voice_start)) if voice_start else observed
-        )
-        return {
-            "status": "in_voice",
-            **self.state,
-            "channel_name": self.channels.get(self.state["channel_id"]),
-            "observed_seconds": observed,
-            "voice_start_time": voice_start,
-            "timer_started_at": voice_start or self.observed_started_at,
-            "elapsed_seconds": elapsed,
-            "timer_source": "discord" if voice_start else "observed",
-        }
+from .voice_state import VoiceTracker
 
 
 def output(data):
@@ -317,6 +214,34 @@ def prepare_token(state_path, env_path, *, prompt=False):
     return store, token
 
 
+def prepare_bot_token(state_path, *, prompt=False):
+    store = TokenStore(state_path)
+    token = store.load() or os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+    if prompt or not token:
+        if not sys.stdin.isatty():
+            raise SourceError("Set DISCORD_BOT_TOKEN or run busydiscord --mode bot --login first")
+        token = getpass.getpass("Discord Bot Token (hidden): ").strip()
+    token = token.removeprefix("Bot ").strip()
+    if not token:
+        raise SourceError("Bot Token cannot be empty")
+    store.save(token)
+    return token
+
+
+def source_for_mode(mode, args, root):
+    if mode == "bot":
+        user_id = args.user_id or os.environ.get("DISCORD_USER_ID", "")
+        if not user_id.isascii() or not user_id.isdecimal():
+            raise SourceError("Set DISCORD_USER_ID or --user-id to the Discord user ID to monitor")
+        token = prepare_bot_token(root / ".state" / "discord-bot-token.json", prompt=args.login)
+        return BotSource(token, user_id, output)
+    client_id = args.client_id or os.environ.get("DISCORD_CLIENT_ID", "")
+    client_secret = os.environ.get("DISCORD_CLIENT_SECRET", "")
+    if not client_id.isascii() or not client_id.isdecimal() or not client_secret:
+        raise SourceError("RPC requires DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET from your developer application")
+    return RpcSource(client_id, client_secret, root / ".state" / "discord-rpc.json", output)
+
+
 async def demo(bar, *, single_frame=False):
     display = BarDisplay(bar, output)
     state = {
@@ -343,15 +268,20 @@ async def demo(bar, *, single_frame=False):
         await display.close()
 
 
-def main(argv=None):
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--mode", choices=("rpc", "bot", "user-token"), help="Discord source; defaults to DISCORD_MODE or user-token"
+    )
+    parser.add_argument("--user-id", help="Discord user ID to monitor in bot mode; overrides DISCORD_USER_ID")
+    parser.add_argument("--client-id", help="Developer application Client ID for RPC; overrides DISCORD_CLIENT_ID")
     parser.add_argument("--host", help="BUSY Bar IP[:port] or URL; defaults to BUSYBAR_ADDR or 10.0.4.20 (USB)")
     parser.add_argument("--seconds", type=int, help="Stop after this many seconds; default runs until Ctrl+C")
     parser.add_argument("--console-only", action="store_true", help="Monitor Discord without drawing on BUSY Bar")
     parser.add_argument(
         "--login",
         action="store_true",
-        help="Save/replace the Discord token with hidden terminal input",
+        help="Save/replace the selected mode's credentials; RPC opens authorization in Discord",
     )
     parser.add_argument(
         "--demo",
@@ -370,35 +300,61 @@ def main(argv=None):
         parser.error("--demo/--test cannot be combined with --console-only or --login")
     if args.demo and args.test:
         parser.error("--demo and --test cannot be combined")
+    return args
+
+
+def login_source(source, mode):
+    if isinstance(source, RpcSource):
+        asyncio.run(source.login())
+    else:
+        output({"discord_token": "saved", "mode": mode})
+
+
+def main(argv=None):
+    args = parse_args(argv)
     root = Path(__file__).resolve().parents[2]
     env_path = root / ".env"
-    # Only BusyBar settings use .env during normal operation.
+    # Source selection and BusyBar settings can be supplied through .env.
     load_dotenv(env_path)
+    mode = args.mode or os.environ.get("DISCORD_MODE") or "user-token"
+    if mode not in ("rpc", "bot", "user-token"):
+        raise SystemExit("DISCORD_MODE must be rpc, bot, or user-token")
     # Library debug logs may contain raw frames. This CLI emits only selected state.
     logging.getLogger("discord").addHandler(logging.NullHandler())
     logging.getLogger("discord").propagate = False
     logging.getLogger("discord").setLevel(logging.CRITICAL)
     try:
+        source = None
         if not (args.demo or args.test):
-            store, token = prepare_token(root / ".state" / "discord-token.json", env_path, prompt=args.login)
+            if mode == "user-token":
+                store, token = prepare_token(root / ".state" / "discord-token.json", env_path, prompt=args.login)
+            else:
+                source = source_for_mode(mode, args, root)
             if args.login:
-                output({"discord_token": "saved"})
+                login_source(source, mode)
                 return
         addr = args.host or os.environ.get("BUSYBAR_ADDR") or "10.0.4.20"
         bar_token = os.environ.get("BUSYBAR_TOKEN")
 
         async def run():
             if args.console_only:
+                if source:
+                    return await observe_source(source, args.seconds)
                 return await observe(token, args.seconds, store)
             async with make_bar(addr, bar_token) as bar:
                 if args.demo or args.test:
                     await demo(bar, single_frame=args.test)
                     return 0
+                if source:
+                    return await observe_source(source, args.seconds, bar)
                 return await observe(token, args.seconds, store, bar)
 
         return_code = asyncio.run(run())
     except KeyboardInterrupt:
         return_code = 0
+    except SourceError as exc:
+        output({"connection": "configuration_error", "mode": mode, "message": str(exc)})
+        return_code = 1
     except ValueError as exc:
         output({"connection": "configuration_error", "error_type": type(exc).__name__})
         return_code = 1

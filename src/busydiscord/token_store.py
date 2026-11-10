@@ -5,6 +5,21 @@ import tempfile
 from pathlib import Path
 
 
+def save_private_json(path, data):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".token-", dir=path.parent)
+    temporary = Path(temporary)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(data, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
 class TokenStore:
     def __init__(self, path: Path, bootstrap: str = ""):
         self.path = path
@@ -27,18 +42,6 @@ class TokenStore:
     def save(self, token: str) -> bool:
         if not token or (token == self.current and self.path.exists()):
             return False
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix=".token-", dir=self.path.parent)
-        temporary = Path(temporary)
-        try:
-            # mkstemp creates a file readable/writable only by its owner.
-            with os.fdopen(fd, "w") as stream:
-                json.dump({"token": token}, stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.replace(self.path)
-            self.current = token
-        finally:
-            if temporary.exists():
-                temporary.unlink()
+        save_private_json(self.path, {"token": token})
+        self.current = token
         return True

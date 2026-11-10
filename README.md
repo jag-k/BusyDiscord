@@ -3,12 +3,15 @@
 Display Discord voice activity on [BUSY Bar](https://busy.app/): the current voice
 channel, voice session duration, and microphone and audio status.
 
-BusyDiscord connects through `discord.py-self`. It does not require a Discord
-client running on the same computer or a bot installed in each server.
+BusyDiscord supports a local Discord desktop connection, a Discord bot, or a
+user account token. Choose the source with `--mode` or `DISCORD_MODE` in `.env`.
 
 > **Discord account policy:** Automating user accounts violates
 > [Discord's rules](https://support.discord.com/hc/en-us/articles/115002192352-Automated-User-Accounts-Self-Bots)
-> and may result in account termination. BusyDiscord is an unofficial integration.
+> and may result in account termination. This applies to `user-token` mode.
+> It offers the broadest coverage but carries the highest account risk of the
+> three modes. The likelihood of enforcement is unknown; do not assume it is low.
+> BusyDiscord is an unofficial integration.
 
 ## Features
 
@@ -25,7 +28,79 @@ client running on the same computer or a bot installed in each server.
 
 - Python 3.14 or later and [uv](https://docs.astral.sh/uv/), or Docker with Compose.
 - A BUSY Bar reachable over USB or Wi-Fi, running firmware 1.3.1 or later.
-- A Discord user account token. Password and QR-code login are not currently supported.
+- Discord credentials for the selected mode, described below.
+
+## Discord modes
+
+| Mode | Runs on | Credentials | Coverage |
+| --- | --- | --- | --- |
+| `rpc` | The same PC as Discord desktop | Application Client ID, Client Secret, and local authorization | The local client's selected voice channel and voice state |
+| `bot` | Any PC or server | Bot Token and the user ID to monitor | Voice channels on servers where the bot is installed; no personal/group calls |
+| `user-token` (default) | Any PC or server | Discord user account token | Existing account-based integration, including personal/group calls |
+
+For account safety, prefer `bot` where its server coverage is sufficient, or
+`rpc` where your application has the required access. `user-token` is the most
+versatile option, but Discord prohibits this type of user-account automation;
+it is the least safe option for your account. Keeping it as the default preserves
+existing installations and is not a safety recommendation.
+
+All modes use the same BUSY Bar display. RPC starts the elapsed timer when a call
+is first observed. Bot mode also falls back to observation, using Discord's voice-session
+time when supplied. RPC reconnects and resumed bot sessions preserve the observed
+timer while the process remains running. They cannot recover a personal join time
+from before startup. `user-token` retains the existing Discord-provided voice-session timer.
+
+### Local RPC
+
+Create a developer application in the [Discord Developer Portal](https://discord.com/developers/applications).
+Set `DISCORD_MODE=rpc`, `DISCORD_CLIENT_ID`, and `DISCORD_CLIENT_SECRET` in `.env`.
+Then, with Discord desktop running under the same OS user:
+
+```sh
+uv run busydiscord --mode rpc --login
+uv run busydiscord --mode rpc
+```
+
+Accept the authorization prompt in Discord. Tokens are stored separately in
+`.state/discord-rpc.json` and refreshed automatically when reconnecting.
+The connection uses native IPC on Windows, macOS, and Linux, with read-only voice
+queries once per second. BUSY Bar redraws still happen only on state changes.
+`DISCORD_RPC_PATH` can override the detected socket/pipe path.
+
+Discord restricts the `rpc` and `rpc.voice.read` scopes and may require approval
+or developer tester access for your application. Merely creating a Rich Presence
+application does not guarantee voice access. See [RPC](https://docs.discord.com/developers/topics/rpc)
+and [OAuth2 scopes](https://docs.discord.com/developers/topics/oauth2).
+Run this mode natively; the Compose configuration does not expose desktop IPC.
+
+### Bot
+
+Create an application and bot in the Developer Portal and install it on every
+server you want to monitor. Set `DISCORD_MODE=bot` and `DISCORD_USER_ID` in `.env`.
+To copy your user ID, enable Developer Mode in Discord and use **Copy User ID**
+on your profile. Enter the bot's token with:
+
+```sh
+uv run busydiscord --mode bot --login
+uv run busydiscord --mode bot
+```
+
+The token is saved in `.state/discord-bot-token.json`. `DISCORD_BOT_TOKEN` is also
+accepted for initial unattended setup. `--user-id` overrides `DISCORD_USER_ID`.
+Only the `GUILDS` and `GUILD_VOICE_STATES` intents are requested; privileged
+member, presence, and message-content intents are unnecessary. The bot does not
+join voice or read messages. Outside voice means outside the servers visible to
+the bot; activity in personal calls or other servers is unavailable to this mode.
+The existing Compose deployment supports bot mode with the same `.env` and state volume.
+
+### User account token
+
+This is the existing mode and remains the default. Password and QR-code login
+are not supported. Its token remains in `.state/discord-token.json`.
+It works without a local desktop client or a bot installed in each server, making
+it the most versatile mode. However, Discord prohibits self-bots and may terminate
+the account. There is no reliable estimate of the ban probability for BusyDiscord,
+so this mode should not be treated as low risk even if it appears to work normally.
 
 ## Getting started
 
@@ -38,7 +113,7 @@ uv run busydiscord --login
 uv run busydiscord
 ```
 
-The `--login` command prompts for a Discord token without displaying the input and
+In `user-token` mode, `--login` prompts for a Discord token without displaying the input and
 stores it in `.state/discord-token.json`. Run it again to replace the saved token.
 
 Configure the BUSY Bar connection in `.env`:
