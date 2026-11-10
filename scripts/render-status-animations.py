@@ -1,7 +1,7 @@
 """Build transparent 9x9 BUSY Bar animations from editable SVG glyphs.
 
-Requires rsvg-convert and ffmpeg. Uses uncompressed BGRA bicycle0 frames,
-compatible with the published firmware's scripts/seq2anim.py (1.1.1).
+Requires rsvg-convert and ffmpeg. Uses uncompressed BGRA bicycle1 frames,
+compatible with the published firmware's scripts/seq2anim.py (1.3.1).
 """
 
 import base64
@@ -16,7 +16,7 @@ from pathlib import Path
 ASSETS = Path(__file__).resolve().parents[1] / "src" / "busydiscord" / "assets"
 SIZE = 9
 FPS = 48
-HEADER = "<8sBBBBBHBIIIII"
+HEADER = "<8sBBBBHHBBIIII"
 RSVG = shutil.which("rsvg-convert") or "/usr/bin/rsvg-convert"
 FFMPEG = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
 
@@ -76,28 +76,29 @@ def encode(filename, sections):
         frames.extend(raster(svg) for svg in sequence)
         ranges.append((name, start, len(frames) - 1))
     ranges.insert(0, ("default", 0, len(frames) - 1))
-    section_size = sum(14 + len(name) for name, _, _ in ranges)
-    frame_size = 4 + SIZE * SIZE * 4
+    section_size = sum(13 + len(name) for name, _, _ in ranges)
+    frame_size = 5 + SIZE * SIZE * 4
     offset = struct.calcsize(HEADER) + section_size
     entries = b"".join(
-        struct.pack("<IIIB", start, end, offset + start * frame_size, 1) + name.encode() + b"\0"
+        struct.pack("<III", start, end, offset + start * frame_size) + name.encode() + b"\0"
         for name, start, end in ranges
     )
-    body = b"".join(struct.pack("<BBH", 0, 1, len(frame)) + frame for frame in frames)
+    # Fully white mask (all pixels), raw BGRA pixels, no mask payload.
+    body = b"".join(struct.pack("<BHH", 0x10, 0, len(frame)) + frame for frame in frames)
     header = struct.pack(
         HEADER,
-        b"bicycle0",
+        b"bicycle1",
         0,
         SIZE,
         SIZE,
         2,
-        FPS,
+        0,
         SIZE * SIZE * 4,
+        FPS,
         0,
         section_size,
         len(body),
         len(ranges),
-        len(frames),
         len(frames),
     )
     (ASSETS / filename).write_bytes(header + entries + body)

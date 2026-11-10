@@ -107,7 +107,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         def handle(request):
             requests.append(request)
             if request.url.path == "/api/version":
-                return httpx2.Response(200, json={"api_semver": "27.5.0"})
+                return httpx2.Response(200, json={"api_semver": "27.14.0"})
             return httpx2.Response(200, json={"result": "success"})
 
         async with AsyncBusyBar(
@@ -121,7 +121,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r.method for r in requests], ["GET", *["POST"] * (len(ICON_FILES) + 1), "DELETE"])
         for request in requests[1:draw_index]:
             self.assertEqual(request.url.path, "/api/assets/upload")
-            self.assertTrue(request.content.startswith((b"\x89PNG", b"bicycle0")))
+            self.assertTrue(request.content.startswith((b"\x89PNG", b"bicycle1")))
         self.assertEqual(requests[draw_index].url.path, "/api/display/draw")
         self.assertEqual(requests[draw_index].headers["X-API-Token"], "test-only-token")
         self.assertEqual(json.loads(requests[draw_index].content)["application_name"], APP_NAME)

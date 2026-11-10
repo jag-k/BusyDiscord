@@ -19,9 +19,10 @@ Regenerate the PNG assets with `sh scripts/render-icons.sh` (requires
 The current overlay has independent `microphone.svg` and `headphones.svg`
 glyphs. `status-glyph-*.anim` scales between them, and `status-strike-*.anim`
 draws/erases the red strike without changing the underlying glyph. Both
-use transparent BGRA frames in the firmware's bicycle0 format (raw encoding).
-The format follows busy-app/busybar-firmware `scripts/seq2anim.py`, tag 1.1.1;
+use transparent BGRA frames in the firmware's bicycle1 format (raw encoding).
+The format follows busy-app/busybar-firmware `scripts/seq2anim.py`, tag 1.3.1;
 the generator here is an independent minimal writer.
+Firmware 1.3.1 requires this format; the previous bicycle0 assets are rejected.
 
 `scripts/render-status-animations.py` requires `rsvg-convert` and `ffmpeg`.
 It also creates `docs/status-transitions.gif` from the same vector sources.

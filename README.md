@@ -24,7 +24,7 @@ client running on the same computer or a bot installed in each server.
 ## Requirements
 
 - Python 3.14 or later and [uv](https://docs.astral.sh/uv/), or Docker with Compose.
-- A BUSY Bar reachable over USB or Wi-Fi.
+- A BUSY Bar reachable over USB or Wi-Fi, running firmware 1.3.1 or later.
 - A Discord user account token. Password and QR-code login are not currently supported.
 
 ## Getting started
